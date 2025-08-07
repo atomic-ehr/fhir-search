@@ -1,0 +1,13 @@
+{
+  "name": "@atomic-ehr/fhir-search",
+  "module": "src/index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "turndown": "^7.1.2",
+    "@types/turndown": "^5.0.4"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
