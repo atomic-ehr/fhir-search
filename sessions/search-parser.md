@@ -13,26 +13,28 @@
 ```typescript
 interface SearchQuery {
   resource: string;
-  // select
+  
+  // Selection
   summary?: 'true' | 'false' | 'count' | 'data';
   elements?: ElementSelection;  // Nested structure for element selection
-  //
+  
+  // Filtering
   where?: Expression[];        // Local resource filters (ANDed)
 
-  // joins
-  chain?: ChainExpression[];   // Forward reference chaining
-  has?: HasExpression[];       // Reverse reference chaining (_has)
+  // Joins (unified chain and _has - these filter the result set)
+  joins?: Join[];  // Both forward chains and reverse _has (INNER JOINs)
 
-  // Special parameters
-  includes?: IncludeExpression[];  // Unified includes (both _include and _revinclude)
+  // Eager loading (unified _include and _revinclude - these don't filter)
+  includes?: IncludeExpression[];  // Resource inclusion for eager loading
 
+  // Result control
   sort?: SortParam[];
   count?: number;
   offset?: number;
 
+  // Container control
   contained?: 'true' | 'false' | 'both';
   containedType?: 'container' | 'contained';
-
 }
 ```
 
@@ -220,23 +222,47 @@ type Value =
   | BooleanValue;
 ```
 
-### Chaining Support
+### Join Support (Unified Chain and _has)
 ```typescript
-// Forward chaining - following references forward
-interface ChainExpression {
-  parameter: string;              // The reference parameter
-  resourceType?: string;          // Optional type constraint (e.g., "Patient")
-  chain?: ChainExpression;        // Nested chain for deep references (recursive)
-  has?: HasExpression;            // Can have _has at any point in the chain
-  where?: Expression[];           // Final filters at the end of the chain
+// Unified joins - handles both chain and _has
+// These are INNER JOINs that filter the result set
+interface Join {
+  // Join target
+  resource: string;                   // The resource type to join with
+  as?: string;                        // Alias for this joined table (optional)
+  
+  // ON condition - how the join relates to parent
+  on: {
+    type: 'reference' | 'reverse-reference';
+    parameter: string;               // The reference parameter
+    // For 'reference': parent.parameter -> joined.id
+    // For 'reverse-reference': joined.parameter -> parent.id
+  };
+  
+  // Additional joins from this resource
+  join?: Join[];                      // Nested joins from this table
+  
+  // WHERE conditions for this joined resource
+  where?: Expression[];               // Filters on the joined resource
 }
 
-// Reverse chaining - _has parameter
-interface HasExpression {
-  resourceType: string;           // The referencing resource type
-  parameter: string;              // The reference parameter in that resource
-  has?: HasExpression;            // Nested _has for deeper reverse chaining
-  where?: Expression[];           // Final filters on the deepest resource
+// Alternative: More explicit but still unified
+interface ReferenceTraversalAlt {
+  type: 'chain' | 'has';             // Explicit type instead of direction
+  
+  // For chain (forward)
+  parameter?: string;                 // The reference parameter to follow
+  targetType?: string;                // Optional type constraint (e.g., "Patient")
+  
+  // For has (reverse)  
+  sourceType?: string;                // The referencing resource type (required for _has)
+  referenceParam?: string;            // The reference parameter in that resource
+  
+  // Recursive traversal
+  next?: ReferenceTraversalAlt;      // Next level (can be chain or has)
+  
+  // Final conditions
+  where?: Expression[];               // Filters at this level
 }
 ```
 
@@ -374,7 +400,7 @@ AST:
 GET /Observation?subject:Patient.name=John&code=1234-5
 ```
 
-AST:
+AST (with SQL-like joins):
 ```typescript
 {
   resource: "Observation",
@@ -385,10 +411,13 @@ AST:
       value: [{ type: "token", code: "1234-5" }]
     }
   ],
-  chain: [
+  joins: [
     {
-      parameter: "subject",
-      resourceType: "Patient",
+      resource: "Patient",
+      on: {
+        type: 'reference',
+        parameter: "subject"  // Observation.subject -> Patient.id
+      },
       where: [
         {
           param: "name",
@@ -399,6 +428,11 @@ AST:
     }
   ]
 }
+
+// Equivalent SQL:
+// SELECT * FROM Observation o
+// INNER JOIN Patient p ON o.subject_id = p.id
+// WHERE o.code = '1234-5' AND p.name = 'John'
 ```
 
 ### Deep Chained Search (2 levels)
@@ -406,26 +440,44 @@ AST:
 GET /Encounter?subject.organization.name=Acme
 ```
 
-AST:
+AST (with SQL-like joins):
 ```typescript
 {
   resource: "Encounter",
-  chain: [
+  joins: [
     {
-      parameter: "subject",
-      chain: {
-        parameter: "organization",
-        where: [
-          {
-            param: "name",
-            operator: "=",
-            value: [{ type: "string", value: "Acme" }]
-          }
-        ]
-      }
+      resource: "Patient",
+      as: "p",
+      on: {
+        type: 'reference',
+        parameter: "subject"  // Encounter.subject -> Patient.id
+      },
+      join: [
+        {
+          resource: "Organization",
+          as: "org",
+          on: {
+            type: 'reference',
+            parameter: "organization"  // Patient.organization -> Organization.id
+          },
+          where: [
+            {
+              param: "name",
+              operator: "=",
+              value: [{ type: "string", value: "Acme" }]
+            }
+          ]
+        }
+      ]
     }
   ]
 }
+
+// Equivalent SQL:
+// SELECT * FROM Encounter e
+// INNER JOIN Patient p ON e.subject_id = p.id
+// INNER JOIN Organization org ON p.organization_id = org.id
+// WHERE org.name = 'Acme'
 ```
 
 ### Very Deep Chained Search (3 levels)
@@ -433,16 +485,19 @@ AST:
 GET /Observation?subject.organization.partOf.name=HealthSystem
 ```
 
-AST:
+AST (with unified joins):
 ```typescript
 {
   resource: "Observation",
-  chain: [
+  joins: [
     {
+      direction: 'forward',
       parameter: "subject",  // Observation -> Patient
-      chain: {
+      join: {
+        direction: 'forward',
         parameter: "organization",  // Patient -> Organization
-        chain: {
+        join: {
+          direction: 'forward',
           parameter: "partOf",  // Organization -> parent Organization
           where: [
             {
@@ -566,14 +621,17 @@ AST:
 GET /Patient?_has:Observation:patient:code=1234-5
 ```
 
-AST:
+AST (with SQL-like joins):
 ```typescript
 {
   resource: "Patient",
-  has: [
+  joins: [
     {
-      resourceType: "Observation",
-      parameter: "patient",
+      resource: "Observation",
+      on: {
+        type: 'reverse-reference',
+        parameter: "patient"  // Observation.patient -> Patient.id
+      },
       where: [
         {
           param: "code",
@@ -584,6 +642,11 @@ AST:
     }
   ]
 }
+
+// Equivalent SQL:
+// SELECT * FROM Patient p
+// INNER JOIN Observation o ON o.patient_id = p.id
+// WHERE o.code = '1234-5'
 ```
 
 ### Nested Reverse Chaining (2 levels)
@@ -648,21 +711,23 @@ AST:
 }
 ```
 
-### Chaining with _has
+### Mixed Chain and _has
 ```
 GET /Encounter?patient._has:Group:member:_id=102
 ```
 
-AST:
+AST (with unified joins - mixing forward and reverse):
 ```typescript
 {
   resource: "Encounter",
-  chain: [
+  joins: [
     {
+      direction: 'forward',
       parameter: "patient",
-      has: {
-        resourceType: "Group",
+      join: {
+        direction: 'reverse',  // Switch to reverse at this level
         parameter: "member",
+        resourceType: "Group",
         where: [
           {
             param: "_id",
@@ -674,6 +739,78 @@ AST:
     }
   ]
 }
+```
+
+### Complex Mixed Chain and _has
+```
+GET /Patient?organization.partOf.name=Regional&_has:Observation:patient:_has:DiagnosticReport:result:status=final
+```
+
+AST (with SQL-like joins):
+```typescript
+{
+  resource: "Patient",
+  joins: [
+    {
+      resource: "Organization",
+      as: "org1",
+      on: {
+        type: 'reference',
+        parameter: "organization"  // Patient.organization -> Organization.id
+      },
+      join: [
+        {
+          resource: "Organization",
+          as: "org2",
+          on: {
+            type: 'reference',
+            parameter: "partOf"  // org1.partOf -> org2.id
+          },
+          where: [
+            {
+              param: "name",
+              operator: "=",
+              value: [{ type: "string", value: "Regional" }]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      resource: "Observation",
+      as: "obs",
+      on: {
+        type: 'reverse-reference',
+        parameter: "patient"  // Observation.patient -> Patient.id
+      },
+      join: [
+        {
+          resource: "DiagnosticReport",
+          as: "dr",
+          on: {
+            type: 'reverse-reference',
+            parameter: "result"  // DiagnosticReport.result -> Observation.id
+          },
+          where: [
+            {
+              param: "status",
+              operator: "=",
+              value: [{ type: "token", code: "final" }]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+
+// Equivalent SQL:
+// SELECT DISTINCT p.* FROM Patient p
+// INNER JOIN Organization org1 ON p.organization_id = org1.id
+// INNER JOIN Organization org2 ON org1.partOf_id = org2.id
+// INNER JOIN Observation obs ON obs.patient_id = p.id
+// INNER JOIN DiagnosticReport dr ON dr.result_id = obs.id
+// WHERE org2.name = 'Regional' AND dr.status = 'final'
 ```
 
 ### Complex Query with OR/AND
@@ -1230,12 +1367,14 @@ AST:
 1. **Simplicity**: Flat structure with clear semantics for filters, nested for selections
 2. **SQL-like**: Maps naturally to database queries
 3. **Unified Operators**: Modifiers and operators are the same concept
-4. **Type Safety**: Strong typing for values and operators
-5. **Extensibility**: Easy to add new operators or value types
-6. **Performance**: Flat arrays are easier to optimize than deep trees
-7. **Clarity**: Explicit separation of concerns (where/chain/has/includes)
-8. **GraphQL-like Selection**: Nested element selection matches modern API patterns
-9. **Flexible Element Selection**: Support both simple arrays and nested objects for field selection
+4. **Unified Joins**: Chain and _has unified as bidirectional joins (INNER JOINs)
+5. **Unified Eager Loading**: _include and _revinclude share the same structure for eager loading
+6. **Type Safety**: Strong typing for values and operators
+7. **Extensibility**: Easy to add new operators or value types
+8. **Performance**: Flat arrays are easier to optimize than deep trees
+9. **Clarity**: Three unified concepts - filtering (where), joins (chain/_has), and eager loading (includes)
+10. **GraphQL-like Selection**: Nested element selection matches modern API patterns
+11. **Flexible Joins**: Can mix forward and reverse joins at any level
 
 ## Implementation Notes
 
