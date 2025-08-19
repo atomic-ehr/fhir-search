@@ -229,7 +229,6 @@ type Value =
 interface Join {
   // Join target
   resource: string;                   // The resource type to join with
-  as?: string;                        // Alias for this joined table (optional)
   
   // ON condition - how the join relates to parent
   on: {
@@ -430,9 +429,9 @@ AST (with SQL-like joins):
 }
 
 // Equivalent SQL:
-// SELECT * FROM Observation o
-// INNER JOIN Patient p ON o.subject_id = p.id
-// WHERE o.code = '1234-5' AND p.name = 'John'
+// SELECT * FROM Observation
+// INNER JOIN Patient ON Observation.subject_id = Patient.id
+// WHERE Observation.code = '1234-5' AND Patient.name = 'John'
 ```
 
 ### Deep Chained Search (2 levels)
@@ -447,7 +446,6 @@ AST (with SQL-like joins):
   joins: [
     {
       resource: "Patient",
-      as: "p",
       on: {
         type: 'reference',
         parameter: "subject"  // Encounter.subject -> Patient.id
@@ -455,7 +453,6 @@ AST (with SQL-like joins):
       join: [
         {
           resource: "Organization",
-          as: "org",
           on: {
             type: 'reference',
             parameter: "organization"  // Patient.organization -> Organization.id
@@ -474,10 +471,10 @@ AST (with SQL-like joins):
 }
 
 // Equivalent SQL:
-// SELECT * FROM Encounter e
-// INNER JOIN Patient p ON e.subject_id = p.id
-// INNER JOIN Organization org ON p.organization_id = org.id
-// WHERE org.name = 'Acme'
+// SELECT * FROM Encounter
+// INNER JOIN Patient ON Encounter.subject_id = Patient.id
+// INNER JOIN Organization ON Patient.organization_id = Organization.id
+// WHERE Organization.name = 'Acme'
 ```
 
 ### Very Deep Chained Search (3 levels)
@@ -644,9 +641,9 @@ AST (with SQL-like joins):
 }
 
 // Equivalent SQL:
-// SELECT * FROM Patient p
-// INNER JOIN Observation o ON o.patient_id = p.id
-// WHERE o.code = '1234-5'
+// SELECT * FROM Patient
+// INNER JOIN Observation ON Observation.patient_id = Patient.id
+// WHERE Observation.code = '1234-5'
 ```
 
 ### Nested Reverse Chaining (2 levels)
@@ -753,7 +750,6 @@ AST (with SQL-like joins):
   joins: [
     {
       resource: "Organization",
-      as: "org1",
       on: {
         type: 'reference',
         parameter: "organization"  // Patient.organization -> Organization.id
@@ -761,7 +757,6 @@ AST (with SQL-like joins):
       join: [
         {
           resource: "Organization",
-          as: "org2",
           on: {
             type: 'reference',
             parameter: "partOf"  // org1.partOf -> org2.id
@@ -778,7 +773,6 @@ AST (with SQL-like joins):
     },
     {
       resource: "Observation",
-      as: "obs",
       on: {
         type: 'reverse-reference',
         parameter: "patient"  // Observation.patient -> Patient.id
@@ -786,7 +780,6 @@ AST (with SQL-like joins):
       join: [
         {
           resource: "DiagnosticReport",
-          as: "dr",
           on: {
             type: 'reverse-reference',
             parameter: "result"  // DiagnosticReport.result -> Observation.id
@@ -805,12 +798,12 @@ AST (with SQL-like joins):
 }
 
 // Equivalent SQL:
-// SELECT DISTINCT p.* FROM Patient p
-// INNER JOIN Organization org1 ON p.organization_id = org1.id
+// SELECT DISTINCT Patient.* FROM Patient
+// INNER JOIN Organization org1 ON Patient.organization_id = org1.id
 // INNER JOIN Organization org2 ON org1.partOf_id = org2.id
-// INNER JOIN Observation obs ON obs.patient_id = p.id
-// INNER JOIN DiagnosticReport dr ON dr.result_id = obs.id
-// WHERE org2.name = 'Regional' AND dr.status = 'final'
+// INNER JOIN Observation ON Observation.patient_id = Patient.id
+// INNER JOIN DiagnosticReport ON DiagnosticReport.result_id = Observation.id
+// WHERE org2.name = 'Regional' AND DiagnosticReport.status = 'final'
 ```
 
 ### Complex Query with OR/AND
