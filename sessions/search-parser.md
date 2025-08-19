@@ -45,6 +45,9 @@ interface SearchExpression {
   param: string | string[];  // string[] for nested paths like ["address", "city"]
   operator: Operator;
   value: Value[];
+  
+  // Enrichment: Full SearchParameter definition from ModelProvider
+  searchParam?: SearchParameter;
 }
 
 // Logical groupings
@@ -243,25 +246,35 @@ interface Join {
   
   // WHERE conditions for this joined resource
   where?: Expression[];               // Filters on the joined resource
+  
+  // Enrichment: SearchParameter for the reference being joined on
+  searchParam?: SearchParameter;
 }
 
-// Alternative: More explicit but still unified
-interface ReferenceTraversalAlt {
-  type: 'chain' | 'has';             // Explicit type instead of direction
-  
-  // For chain (forward)
-  parameter?: string;                 // The reference parameter to follow
-  targetType?: string;                // Optional type constraint (e.g., "Patient")
-  
-  // For has (reverse)  
-  sourceType?: string;                // The referencing resource type (required for _has)
-  referenceParam?: string;            // The reference parameter in that resource
-  
-  // Recursive traversal
-  next?: ReferenceTraversalAlt;      // Next level (can be chain or has)
-  
-  // Final conditions
-  where?: Expression[];               // Filters at this level
+```
+
+### SearchParameter Definition (from FHIR)
+```typescript
+// FHIR SearchParameter resource structure
+interface SearchParameter {
+  id?: string;
+  url?: string;
+  name: string;                      // Human-readable name
+  code: string;                      // Code used in search query
+  base: string[];                    // Resource types this applies to
+  type: 'number' | 'date' | 'string' | 'token' | 'reference' | 'composite' | 'quantity' | 'uri' | 'special';
+  expression?: string;               // FHIRPath expression
+  xpath?: string;                    // XPath expression (legacy)
+  target?: string[];                 // For reference types - valid target resources
+  multipleOr?: boolean;              // Can be used multiple times with OR semantics
+  multipleAnd?: boolean;             // Can be used multiple times with AND semantics
+  comparator?: string[];             // Allowed comparators (eq, ne, gt, lt, ge, le, sa, eb, ap)
+  modifier?: string[];               // Allowed modifiers (missing, exact, contains, text, etc.)
+  chain?: string[];                  // Allowed chained parameters (for reference types)
+  component?: Array<{                // For composite parameters
+    definition: string;              // Reference to component SearchParameter
+    expression: string;              // FHIRPath for this component
+  }>;
 }
 ```
 
@@ -1422,11 +1435,149 @@ let pts = PatientSearch
 
 ```
 
+## Enriched AST Examples
+
+### Enriched Simple Search
+```
+GET /Patient?name=John&birthdate=ge2010-01-01
+```
+
+AST after enrichment with ModelProvider:
+```typescript
+{
+  resource: "Patient",
+  where: [
+    {
+      param: "name",
+      operator: "=",
+      value: [{ type: "string", value: "John" }],
+      
+      // Enriched with SearchParameter
+      searchParam: {
+        name: "name",
+        code: "name",
+        base: ["Patient"],
+        type: "string",
+        expression: "Patient.name | Patient.name.text | Patient.name.family | Patient.name.given",
+        multipleOr: true,
+        multipleAnd: true,
+        modifier: ["exact", "contains", "missing", "text"]
+      }
+    },
+    {
+      param: "birthdate",
+      operator: ">=",
+      value: [{ type: "date", value: "2010-01-01", precision: "day" }],
+      
+      searchParam: {
+        name: "birthdate",
+        code: "birthdate",
+        base: ["Patient"],
+        type: "date",
+        expression: "Patient.birthDate",
+        comparator: ["eq", "ne", "gt", "lt", "ge", "le", "sa", "eb", "ap"]
+      }
+    }
+  ]
+}
+```
+
+### Enriched Join (Chain)
+```
+GET /Observation?subject:Patient.name=John
+```
+
+AST after enrichment:
+```typescript
+{
+  resource: "Observation",
+  joins: [
+    {
+      resource: "Patient",
+      on: {
+        type: 'reference',
+        parameter: "subject"
+      },
+      where: [
+        {
+          param: "name",
+          operator: "=",
+          value: [{ type: "string", value: "John" }],
+          
+          searchParam: {
+            name: "name",
+            code: "name",
+            base: ["Patient"],
+            type: "string",
+            expression: "Patient.name | Patient.name.text | Patient.name.family | Patient.name.given"
+          }
+        }
+      ],
+      
+      // SearchParameter for the reference being joined
+      searchParam: {
+        name: "subject",
+        code: "subject",
+        base: ["Observation"],
+        type: "reference",
+        expression: "Observation.subject",
+        target: ["Patient", "Group", "Device", "Location"],
+        chain: ["name", "identifier", "birthdate", "gender", "organization"]
+      }
+    }
+  ]
+}
+```
+
+### Enriched Composite Parameter
+```
+GET /Observation?code-value-quantity=http://loinc.org|1234-5$gt150|http://unitsofmeasure.org|mmol/L
+```
+
+AST after enrichment:
+```typescript
+{
+  resource: "Observation",
+  where: [
+    {
+      param: "code-value-quantity",
+      operator: "=",
+      value: [{
+        type: "composite",
+        parts: [
+          { type: "token", system: "http://loinc.org", code: "1234-5" },
+          { type: "quantity", value: 150, comparator: ">", system: "http://unitsofmeasure.org", code: "mmol/L" }
+        ]
+      }],
+      
+      searchParam: {
+        name: "code-value-quantity",
+        code: "code-value-quantity",
+        base: ["Observation"],
+        type: "composite",
+        expression: "Observation",
+        component: [
+          {
+            definition: "http://hl7.org/fhir/SearchParameter/clinical-code",
+            expression: "Observation.code"
+          },
+          {
+            definition: "http://hl7.org/fhir/SearchParameter/Observation-value-quantity",
+            expression: "Observation.value.as(Quantity)"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
 ## Next Steps
 
 1. Implement tokenizer for URL query strings
 2. Build parser to generate AST
-3. Create validator using SearchParameter definitions
-4. Implement AST to SQL/MongoDB query transformer
-5. Build LSP server with completion and validation
-6. Create tests for all FHIR search scenarios
+3. Enrich AST with SearchParameter definitions from ModelProvider
+4. Create validator using enriched SearchParameter metadata
+5. Implement AST to SQL/MongoDB query transformer
+6. Build LSP server with completion and validation
+7. Create tests for all FHIR search scenarios
