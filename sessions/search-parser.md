@@ -15,7 +15,7 @@ interface SearchQuery {
   resource: string;
   // select
   summary?: 'true' | 'false' | 'count' | 'data';
-  elements?: string[];
+  elements?: ElementSelection;  // Nested structure for element selection
   //
   where?: Expression[];        // Local resource filters (ANDed)
 
@@ -69,46 +69,99 @@ type Expression =
   | NotExpression;
 ```
 
-### Operators (Including Modifiers as Operators)
+### Standard Operators (Unified AST)
 ```typescript
 type Operator =
-  // Standard search operators
-  | 'eq'        // equals (default)
-  | 'ne'        // not equal
-  | 'gt'        // greater than
-  | 'lt'        // less than
-  | 'ge'        // greater or equal
-  | 'le'        // less or equal
+  // Standard comparison operators (using symbols)
+  | '='              // Equals
+  | '!='             // Not equals
+  | '>'              // Greater than
+  | '<'              // Less than
+  | '>='             // Greater than or equal
+  | '<='             // Less than or equal
+  | '~'              // Approximately equal
 
-  // String operators (formerly modifiers)
-  | 'exact'     // exact match (case sensitive)
-  | 'contains'  // substring match
+  // String matching operators
+  | 'contains'       // Substring match (case insensitive)
+  | 'starts-with'    // String starts with
+  | 'ends-with'      // String ends with
+  | 'exact'          // Exact string match (case sensitive)
 
-  // Text search
-  | 'text'      // search in human-readable text
+  // Date/time operators
+  | 'starts-after'   // Date/period starts after
+  | 'ends-before'    // Date/period ends before
+  | 'overlaps'       // Period overlaps
 
-  // Token operators
-  | 'not'       // exclude this code
-  | 'above'     // subsumes in hierarchy
-  | 'below'     // subsumed by in hierarchy
-  | 'in'        // in value set
-  | 'not-in'    // not in value set
+  // Existence operators
+  | 'exists'         // Field/value exists
+  | 'missing'        // Field/value does not exist
 
-  // Special operators
-  | 'missing'   // field exists (true) or not (false)
+  // Text search operators
+  | 'text'           // Full text search
+  | 'match'          // Pattern matching
 
-  // Additional filter operators
-  | 'co'        // contains (same as 'contains')
-  | 'sw'        // starts with
-  | 'ew'        // ends with
-  | 'ap'        // approximately
-  | 'sa'        // starts after
-  | 'eb'        // ends before
-  | 'pr'        // present (exists)
-  | 'po'        // period overlaps
-  | 'ss'        // subsumes
-  | 'sb'        // subsumed by
-  | 're';       // references
+  // Set membership operators
+  | 'in'             // Value in set/ValueSet
+  | 'not-in'         // Value not in set/ValueSet
+
+  // Hierarchy operators
+  | 'subsumes'       // Concept subsumes (is parent of)
+  | 'subsumed-by'    // Concept is subsumed by (is child of)
+
+  // Reference operators
+  | 'references'     // References a resource
+  | 'identified-by'  // Match by identifier
+
+  // Logical operator
+  | 'not';           // Logical NOT
+
+// Mapping from FHIR syntaxes to standard operators
+const FHIRToStandardOperators = {
+  // Search parameter prefixes
+  '': '=',                // Default (no prefix)
+  'eq': '=',
+  'ne': '!=',
+  'gt': '>',
+  'lt': '<',
+  'ge': '>=',
+  'le': '<=',
+  'sa': 'starts-after',
+  'eb': 'ends-before',
+  'ap': '~',
+
+  // Search parameter modifiers
+  ':exact': 'exact',
+  ':contains': 'contains',
+  ':missing': 'missing',
+  ':text': 'text',
+  ':above': 'subsumes',
+  ':below': 'subsumed-by',
+  ':in': 'in',
+  ':not-in': 'not-in',
+  ':not': 'not',
+  ':identifier': 'identified-by',
+
+  // _filter operators
+  'eq': '=',
+  'ne': '!=',
+  'co': 'contains',
+  'sw': 'starts-with',
+  'ew': 'ends-with',
+  'gt': '>',
+  'lt': '<',
+  'ge': '>=',
+  'le': '<=',
+  'ap': '~',
+  'sa': 'starts-after',
+  'eb': 'ends-before',
+  'pr': 'exists',
+  'po': 'overlaps',
+  'ss': 'subsumes',
+  'sb': 'subsumed-by',
+  're': 'references',
+  'in': 'in',
+  'ni': 'not-in'
+};
 ```
 
 ### Value Types
@@ -189,13 +242,27 @@ interface HasExpression {
 
 ### Special Parameters
 ```typescript
+// Element selection (GraphQL-like nested structure)
+interface ElementSelection {
+  [field: string]: boolean | ElementSelection;
+}
+
+// Alternative: More explicit structure
+interface ElementSelectionAlt {
+  fields?: string[];                          // Direct fields on this resource
+  nested?: { [path: string]: ElementSelection };  // Nested selections
+}
+
 // Unified Include parameters (handles both _include and _revinclude)
 interface IncludeExpression {
   direction: 'forward' | 'reverse';  // forward = _include, reverse = _revinclude
   source?: string;                   // Source resource type (optional for wildcards)
   parameter?: string | '*';          // Reference parameter or "*" for wildcard
   target?: string;                   // Optional target resource type constraint
-  iterate?: boolean;                 // Apply recursively to included resources
+  iterate?: boolean;                 // Apply recursively to included resources (standard)
+  recurse?: boolean;                 // Alternative to iterate (Aidbox extension)
+  logical?: boolean;                 // Include via logical references/identifiers (Aidbox)
+  select?: string[] | ElementSelection;  // Elements to select from included resources
   includes?: IncludeExpression[];   // Nested includes on the included resources
 }
 
@@ -219,19 +286,19 @@ AST:
   where: [
     {
       param: "name",
-      operator: "eq",
+      operator: "=",              // Default (no prefix) -> '='
       value: [{ type: "string", value: "John" }]
     },
     {
       param: "birthdate",
-      operator: "ge",
+      operator: ">=",             // 'ge' prefix -> '>='
       value: [{ type: "date", value: "2010-01-01", precision: "day" }]
     }
   ]
 }
 ```
 
-### Search with Modifiers (as Operators)
+### Search with Modifiers
 ```
 GET /Patient?name:exact=John&identifier:missing=false
 ```
@@ -243,19 +310,40 @@ AST:
   where: [
     {
       param: "name",
-      operator: "exact",  // Modifier becomes operator
-      spDefininition: {
-        expression: "exact"
-      },
-      paramType: { type: "HumanName"}
+      operator: "exact",          // :exact modifier -> 'exact'
       value: [{ type: "string", value: "John" }]
     },
     {
       param: "identifier",
-      operator: "missing",
-      value: [{ type: "boolean", value: false }]
+      operator: "exists",         // :missing=false -> 'exists'
+      value: [{ type: "boolean", value: true }]
     }
   ]
+}
+```
+
+### Search with Element Selection
+```
+GET /Patient?name=John&_elements=id,name,birthDate,address
+```
+
+AST (with nested structure):
+```typescript
+{
+  resource: "Patient",
+  where: [
+    {
+      param: "name",
+      operator: "=",
+      value: [{ type: "string", value: "John" }]
+    }
+  ],
+  elements: {
+    id: true,
+    name: true,
+    birthDate: true,
+    address: true
+  }
 }
 ```
 
@@ -271,7 +359,7 @@ AST:
   where: [
     {
       param: "name",
-      operator: "eq",
+      operator: "=",
       value: [
         { type: "string", value: "John" },
         { type: "string", value: "Jane" }
@@ -293,7 +381,7 @@ AST:
   where: [
     {
       param: "code",
-      operator: "eq",
+      operator: "=",
       value: [{ type: "token", code: "1234-5" }]
     }
   ],
@@ -304,7 +392,7 @@ AST:
       where: [
         {
           param: "name",
-          operator: "eq",
+          operator: "=",
           value: [{ type: "string", value: "John" }]
         }
       ]
@@ -313,7 +401,7 @@ AST:
 }
 ```
 
-### Deep Chained Search
+### Deep Chained Search (2 levels)
 ```
 GET /Encounter?subject.organization.name=Acme
 ```
@@ -330,10 +418,109 @@ AST:
         where: [
           {
             param: "name",
-            operator: "eq",
+            operator: "=",
             value: [{ type: "string", value: "Acme" }]
           }
         ]
+      }
+    }
+  ]
+}
+```
+
+### Very Deep Chained Search (3 levels)
+```
+GET /Observation?subject.organization.partOf.name=HealthSystem
+```
+
+AST:
+```typescript
+{
+  resource: "Observation",
+  chain: [
+    {
+      parameter: "subject",  // Observation -> Patient
+      chain: {
+        parameter: "organization",  // Patient -> Organization
+        chain: {
+          parameter: "partOf",  // Organization -> parent Organization
+          where: [
+            {
+              param: "name",
+              operator: "=",
+              value: [{ type: "string", value: "HealthSystem" }]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+### Deep Chain with Resource Type Constraints
+```
+GET /Observation?performer:Practitioner.organization:Organization.partOf:Organization.name=Regional
+```
+
+AST:
+```typescript
+{
+  resource: "Observation",
+  chain: [
+    {
+      parameter: "performer",
+      resourceType: "Practitioner",  // Only follow if performer is Practitioner
+      chain: {
+        parameter: "organization",
+        resourceType: "Organization",  // Explicit type (though redundant here)
+        chain: {
+          parameter: "partOf",
+          resourceType: "Organization",  // Ensure partOf points to Organization
+          where: [
+            {
+              param: "name",
+              operator: "=",
+              value: [{ type: "string", value: "Regional" }]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+### Mixed Resource Types in Deep Chain
+```
+GET /Encounter?subject:Patient.generalPractitioner:Practitioner.organization.partOf.identifier=12345
+```
+
+AST:
+```typescript
+{
+  resource: "Encounter",
+  chain: [
+    {
+      parameter: "subject",
+      resourceType: "Patient",  // Subject must be Patient (not Group)
+      chain: {
+        parameter: "generalPractitioner",
+        resourceType: "Practitioner",  // GP must be Practitioner (not Organization)
+        chain: {
+          parameter: "organization",
+          // No type constraint - organization is unambiguous
+          chain: {
+            parameter: "partOf",
+            where: [
+              {
+                param: "identifier",
+                operator: "=",
+                value: [{ type: "token", value: "12345" }]
+              }
+            ]
+          }
+        }
       }
     }
   ]
@@ -355,7 +542,7 @@ AST:
       where: [
         {
           param: "name",
-          operator: "eq",
+          operator: "=",
           value: [{ type: "string", value: "Joe" }]
         }
       ]
@@ -365,7 +552,7 @@ AST:
       where: [
         {
           param: "address-state",
-          operator: "eq",
+          operator: "=",
           value: [{ type: "string", value: "MN" }]
         }
       ]
@@ -390,7 +577,7 @@ AST:
       where: [
         {
           param: "code",
-          operator: "eq",
+          operator: "=",
           value: [{ type: "token", code: "1234-5" }]
         }
       ]
@@ -399,7 +586,7 @@ AST:
 }
 ```
 
-### Nested Reverse Chaining
+### Nested Reverse Chaining (2 levels)
 ```
 GET /Patient?_has:Observation:patient:_has:AuditEvent:entity:agent=MyUserId
 ```
@@ -418,10 +605,43 @@ AST:
         where: [
           {
             param: "agent",
-            operator: "eq",
+            operator: "=",
             value: [{ type: "string", value: "MyUserId" }]
           }
         ]
+      }
+    }
+  ]
+}
+```
+
+### Deep Nested Reverse Chaining (3 levels)
+```
+GET /Organization?_has:Patient:organization:_has:Observation:patient:_has:DiagnosticReport:result:code=123
+```
+
+AST:
+```typescript
+{
+  resource: "Organization",
+  has: [
+    {
+      resourceType: "Patient",
+      parameter: "organization",
+      has: {
+        resourceType: "Observation",
+        parameter: "patient",
+        has: {
+          resourceType: "DiagnosticReport",
+          parameter: "result",
+          where: [
+            {
+              param: "code",
+              operator: "=",
+              value: [{ type: "token", code: "123" }]
+            }
+          ]
+        }
       }
     }
   ]
@@ -446,7 +666,7 @@ AST:
         where: [
           {
             param: "_id",
-            operator: "eq",
+            operator: "=",
             value: [{ type: "string", value: "102" }]
           }
         ]
@@ -468,12 +688,12 @@ AST:
   where: [
     {
       param: "name",
-      operator: "eq",
+      operator: "=",
       value: [{ type: "string", value: "John" }]
     },
     {
       param: "birthdate",
-      operator: "eq",
+      operator: "=",
       value: [
         { type: "date", value: "2010-01-01", precision: "day" },
         { type: "date", value: "2011-01-01", precision: "day" }
@@ -483,32 +703,100 @@ AST:
 }
 ```
 
-### Filter Expression Integration
+### Unified Operator Examples
+
+#### Search parameters mapped to standard operators
 ```
-GET /Patient?_filter=name co "John" and birthdate ge 2010-01-01
+GET /Patient?name:contains=John&birthdate=ge2010-01-01&age=lt65
 ```
 
 AST:
 ```typescript
 {
   resource: "Patient",
-  filter: "name co \"John\" and birthdate ge 2010-01-01",
-  // Optionally parse into where expressions:
+  where: [
+    {
+      param: "name",
+      operator: "contains",       // :contains -> 'contains'
+      value: [{ type: "string", value: "John" }]
+    },
+    {
+      param: "birthdate",
+      operator: ">=",             // 'ge' prefix -> '>='
+      value: [{ type: "date", value: "2010-01-01", precision: "day" }]
+    },
+    {
+      param: "age",
+      operator: "<",              // 'lt' prefix -> '<'
+      value: [{ type: "number", value: 65 }]
+    }
+  ]
+}
+```
+
+#### _filter with same unified operators
+```
+GET /Patient?_filter=name co "John" and birthdate ge 2010-01-01 and age lt 65
+```
+
+AST (identical operators):
+```typescript
+{
+  resource: "Patient",
   where: [
     {
       type: "and",
       expressions: [
         {
           param: "name",
-          operator: "co",
+          operator: "contains",   // 'co' -> 'contains'
           value: [{ type: "string", value: "John" }]
         },
         {
           param: "birthdate",
-          operator: "ge",
+          operator: ">=",         // 'ge' -> '>='
           value: [{ type: "date", value: "2010-01-01", precision: "day" }]
+        },
+        {
+          param: "age",
+          operator: "<",          // 'lt' -> '<'
+          value: [{ type: "number", value: 65 }]
         }
       ]
+    }
+  ]
+}
+```
+
+#### Complex search with various operators
+```
+GET /Patient?name:exact=John&code:in=http://example.org/valueset&birthdate=ap2010&score=gt0.8
+```
+
+AST:
+```typescript
+{
+  resource: "Patient",
+  where: [
+    {
+      param: "name",
+      operator: "exact",          // :exact -> 'exact'
+      value: [{ type: "string", value: "John" }]
+    },
+    {
+      param: "code",
+      operator: "in",             // :in -> 'in'
+      value: [{ type: "string", value: "http://example.org/valueset" }]
+    },
+    {
+      param: "birthdate",
+      operator: "~",              // 'ap' prefix -> '~' (approximately)
+      value: [{ type: "date", value: "2010", precision: "year" }]
+    },
+    {
+      param: "score",
+      operator: ">",              // 'gt' prefix -> '>'
+      value: [{ type: "number", value: 0.8 }]
     }
   ]
 }
@@ -670,6 +958,219 @@ AST:
 }
 ```
 
+#### Iterate modifier for recursive includes
+```
+GET /Observation?_include:iterate=Observation:has-member
+```
+
+AST:
+```typescript
+{
+  resource: "Observation",
+  includes: [
+    {
+      direction: 'forward',
+      source: 'Observation',
+      parameter: 'has-member',
+      iterate: true  // Recursively follow has-member on included Observations
+    }
+  ]
+}
+```
+
+#### Complex nested with iterate
+```
+GET /MedicationRequest?_include=MedicationRequest:requester&_include:iterate=Practitioner:organization&_include=Organization:partOf
+```
+
+AST:
+```typescript
+{
+  resource: "MedicationRequest",
+  includes: [
+    {
+      direction: 'forward',
+      source: 'MedicationRequest',
+      parameter: 'requester',
+      includes: [
+        {
+          direction: 'forward',
+          source: 'Practitioner',
+          parameter: 'organization',
+          iterate: true,  // Keep following organization refs on any included Organizations
+          includes: [
+            {
+              direction: 'forward',
+              source: 'Organization',
+              parameter: 'partOf'
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Mixed forward and reverse includes with nesting
+```
+GET /Patient?_include=Patient:organization&_include=Organization:partOf&_revinclude=Observation:subject&_include=Observation:performer
+```
+
+AST:
+```typescript
+{
+  resource: "Patient",
+  includes: [
+    {
+      direction: 'forward',
+      source: 'Patient',
+      parameter: 'organization',
+      includes: [
+        {
+          direction: 'forward',
+          source: 'Organization',
+          parameter: 'partOf'
+        }
+      ]
+    },
+    {
+      direction: 'reverse',
+      source: 'Observation',
+      parameter: 'subject',
+      includes: [  // On the Observations that reference the Patient
+        {
+          direction: 'forward',
+          source: 'Observation',
+          parameter: 'performer'
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Logical reference includes (Aidbox extension)
+```
+GET /Encounter?_include:logical=Encounter:patient
+```
+
+AST:
+```typescript
+{
+  resource: "Encounter",
+  includes: [
+    {
+      direction: 'forward',
+      source: 'Encounter',
+      parameter: 'patient',
+      logical: true  // Include via identifier match, not just direct reference
+    }
+  ]
+}
+```
+
+#### Recurse modifier (Aidbox alternative to iterate)
+```
+GET /Organization?_include:recurse=Organization:partOf
+```
+
+AST:
+```typescript
+{
+  resource: "Organization",
+  includes: [
+    {
+      direction: 'forward',
+      source: 'Organization',
+      parameter: 'partOf',
+      recurse: true  // Aidbox's recurse modifier (similar to iterate)
+    }
+  ]
+}
+```
+
+#### Elements filtering with nested structure (GraphQL-like)
+```
+GET /Encounter?_include=Encounter:patient&_elements=id,status,Patient.name,Patient.birthDate
+```
+
+AST (with nested element selection):
+```typescript
+{
+  resource: "Encounter",
+  elements: {
+    id: true,
+    status: true
+  },
+  includes: [
+    {
+      direction: 'forward',
+      source: 'Encounter',
+      parameter: 'patient',
+      select: {
+        name: true,
+        birthDate: true
+      }
+    }
+  ]
+}
+```
+
+#### Alternative: Elements as simple arrays per resource
+```
+GET /Encounter?_include=Encounter:patient:Organization&_elements=id,status,class
+```
+
+AST (with array-based selection):
+```typescript
+{
+  resource: "Encounter",
+  elements: {
+    fields: ['id', 'status', 'class']
+  },
+  includes: [
+    {
+      direction: 'forward',
+      source: 'Encounter',
+      parameter: 'patient',
+      target: 'Organization',
+      select: ['name', 'identifier', 'address']  // Can be array or nested object
+    }
+  ]
+}
+```
+
+#### Elements with resource type prefixes
+```
+GET /Patient?_include=Patient:organization&_elements=id,name,Organization.name,Organization.identifier
+```
+
+AST (corrected - _elements is flat list, but can be structured in AST):
+```typescript
+{
+  resource: "Patient",
+  elements: {
+    id: true,
+    name: true
+  },
+  includes: [
+    {
+      direction: 'forward',
+      source: 'Patient',
+      parameter: 'organization',
+      select: {
+        name: true,
+        identifier: true
+      }
+    }
+  ]
+}
+```
+
+Note: The FHIR spec uses flat comma-separated lists for _elements (including resource-prefixed paths like "Organization.name"). 
+The AST can represent this as a nested structure for easier processing, but the input syntax is flat.
+
 #### Include with :iterate modifier (recursive)
 ```
 GET /MedicationDispense?_include=MedicationDispense:prescription&_include:iterate=MedicationRequest:requester
@@ -726,13 +1227,15 @@ AST:
 
 ## Benefits of This Design
 
-1. **Simplicity**: Flat structure with clear semantics
+1. **Simplicity**: Flat structure with clear semantics for filters, nested for selections
 2. **SQL-like**: Maps naturally to database queries
 3. **Unified Operators**: Modifiers and operators are the same concept
 4. **Type Safety**: Strong typing for values and operators
 5. **Extensibility**: Easy to add new operators or value types
 6. **Performance**: Flat arrays are easier to optimize than deep trees
-7. **Clarity**: Explicit separation of concerns (where/chain/has)
+7. **Clarity**: Explicit separation of concerns (where/chain/has/includes)
+8. **GraphQL-like Selection**: Nested element selection matches modern API patterns
+9. **Flexible Element Selection**: Support both simple arrays and nested objects for field selection
 
 ## Implementation Notes
 
@@ -786,7 +1289,6 @@ let pts = PatientSearch
  .select(['id', 'name']).fetch()
 
 ```
-
 
 ## Next Steps
 
