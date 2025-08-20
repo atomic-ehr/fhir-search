@@ -1,10 +1,27 @@
 # FHIR Search Parser AST Design
 
 ## Core Philosophy
-- **The `type` of every node defines its operation.** This includes logical operators (`and`, `or`), structural operators (`join`), and comparison operators (`=`, `gt`, `contains`, etc.).
-- Modifiers are normalized into their equivalent comparison operators.
-- All values are arrays to naturally support multi-value params.
-- Pragmatic, SQL-like mental model.
+- **Syntactic Purity**: The parser's role is to create a literal, syntactic representation of the URL. It does not perform semantic analysis (e.g., case sensitivity, terminology lookups).
+- **Unified Expression Tree**: All filtering logic, from simple key-value pairs to complex `_filter` expressions, is represented as a single, unified expression tree.
+- **Operator-Driven AST**: The `type` of every node in the expression tree explicitly defines its operation (e.g., `type: '='`, `type: 'and'`, `type: 'join'`).
+- **Normalized Syntax**: All FHIR search syntax variations (prefixes like `ge`, modifiers like `:contains`) are normalized into a canonical set of operator types in the AST.
+
+## Architectural Principles: Syntactic vs. Semantic Parsing
+
+The design of this AST and the parser that creates it is guided by a strict separation of concerns:
+
+1.  **The Parser is Purely Syntactic**: The parser's only job is to transform the sequence of characters in a URL into a well-defined, literal tree structure (the AST). It understands FHIR search grammar (parameters, modifiers, prefixes, `_filter` logic) but has no knowledge of the semantics of specific search parameters.
+    -   The AST is **case-preserving and accent-preserving**.
+    -   The parser does not know which parameters are composite, what their components are, or what data types they expect. It parses `code-value-quantity` as a single parameter name.
+
+2.  **Semantic Analysis is a Separate Step**: All semantic logic is the responsibility of a downstream consumer of the AST, often called a "Query Engine" or "AST Transformer". This is the stage that would use a `ModelProvider` to fetch `SearchParameter` definitions and perform actions like:
+    -   Applying case-insensitivity or accent-insensitivity rules.
+    -   Validating that a parameter is valid for a given resource.
+    -   Resolving terminology lookups (e.g., for the `:in` operator).
+    -   Performing unit conversions for quantities.
+    -   Deconstructing composite parameters into their components for query building.
+
+This separation makes the parser robust, reusable, and independent of any specific FHIR data model, while allowing the semantic engine to be highly specialized.
 
 ## AST Structure
 
@@ -107,6 +124,7 @@ type Expression =
 ### Standard Operators (Unified AST)
 The `Operator` type is no longer needed, as each operator is now a distinct `type` in the `Expression` union. The mapping from FHIR syntax is still critical for the parser.
 
+*Note: This mapping is a purely syntactic tool for the parser. The semantic interpretation of these operators (e.g., case sensitivity) is handled by a downstream query engine as described in the "Architectural Principles" section.*
 ```typescript
 // Mapping from FHIR syntaxes to standard operator types
 const FHIRToStandardOperators = {
